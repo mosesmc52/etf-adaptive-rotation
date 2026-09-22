@@ -12,16 +12,16 @@ from dotenv import load_dotenv
 from helpers import (
     StrategyConfig,
     build_strategy_snapshot_for_reporting,
-    str2bool,
-    getenv_float,
-    getenv_int,
     export_strategy_json,
     format_observe_allocations,
     get_app_state,
+    getenv_float,
+    getenv_int,
     is_paper_account,
     monthly_rebalance_day,
     result_trade_today,
     run_single_iteration,
+    str2bool,
     upload_file_to_digitalocean_spaces,
     validate_config,
 )
@@ -33,7 +33,7 @@ def strategy_config_from_env():
     config = StrategyConfig(
         universe=tuple(
             s.strip().upper()
-            for s in os.getenv("ETF_UNIVERSE", "QQQ,EFA,TLT,GLD,VNQ").split(",")
+            for s in os.getenv("ETF_UNIVERSE", "QQQ,ACWI,TLT,GLD,VNQ").split(",")
         ),
         cash=os.getenv("CASH_ETF", "BIL").strip().upper(),
         history_start=os.getenv("HISTORY_START", "2006-01-01"),
@@ -51,7 +51,9 @@ def strategy_config_from_env():
         vol_lookback=getenv_int("VOL_LOOKBACK", 20),
         target_vol=getenv_float("TARGET_VOL", 0.20),
         max_gross_exposure=getenv_float("MAX_GROSS_EXPOSURE", 1.50),
-        high_vol_adjustment_enabled=str2bool(os.getenv("HIGH_VOL_ADJUSTMENT_ENABLED", True)),
+        high_vol_adjustment_enabled=str2bool(
+            os.getenv("HIGH_VOL_ADJUSTMENT_ENABLED", True)
+        ),
         high_vol_threshold=getenv_float("HIGH_VOL_THRESHOLD", 1.20),
         high_vol_weight_multiplier=getenv_float("HIGH_VOL_WEIGHT_MULTIPLIER", 0.70),
         high_vol_reference_lookback=getenv_int("HIGH_VOL_REFERENCE_LOOKBACK", 252),
@@ -77,13 +79,17 @@ def main():
     parser.add_argument(
         "--force-rebalance",
         action=argparse.BooleanOptionalAction,
-        default=str2bool(os.getenv("FORCED_REBALANCE", os.getenv("FORCE_REBALANCE", False))),
+        default=str2bool(
+            os.getenv("FORCED_REBALANCE", os.getenv("FORCE_REBALANCE", False))
+        ),
     )
     parser.add_argument("--state-path", default=os.getenv("STATE_PATH"))
     args = parser.parse_args()
     app_state = get_app_state()
     is_observe = app_state == "OBSERVE"
-    sync_strategy_json_to_spaces = str2bool(os.getenv("SYNC_STRATEGY_JSON_TO_SPACES", False))
+    sync_strategy_json_to_spaces = str2bool(
+        os.getenv("SYNC_STRATEGY_JSON_TO_SPACES", False)
+    )
     email_positions = str2bool(os.getenv("EMAIL_POSITIONS", False))
     to_addresses = [
         a.strip() for a in os.getenv("TO_ADDRESSES", "").split(",") if a.strip()
