@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# Persistent account-specific rebalance journals.
+.rotation-state-*.json
+.rotation-state-*.json.lock

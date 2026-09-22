@@ -1,0 +1,12 @@
+version: "3.7"
+
+services:
+  algo:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: ghcr.io/mosesmc52/etf-adaptive-rotation:${TAG:-latest}
+    restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
