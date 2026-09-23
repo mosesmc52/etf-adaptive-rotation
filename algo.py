@@ -50,7 +50,7 @@ def strategy_config_from_env():
         trend_ma=getenv_int("TREND_MA", 200),
         vol_lookback=getenv_int("VOL_LOOKBACK", 20),
         target_vol=getenv_float("TARGET_VOL", 0.20),
-        max_gross_exposure=getenv_float("MAX_GROSS_EXPOSURE", 1.50),
+        max_gross_exposure=getenv_float("MAX_GROSS_EXPOSURE", 1.0),
         high_vol_adjustment_enabled=str2bool(
             os.getenv("HIGH_VOL_ADJUSTMENT_ENABLED", True)
         ),
