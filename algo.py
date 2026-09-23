@@ -47,7 +47,7 @@ def strategy_config_from_env():
             float(w.strip())
             for w in os.getenv("MOMENTUM_WEIGHTS", "0.50,0.30,0.20").split(",")
         ),
-        trend_ma=getenv_int("TREND_MA", 200),
+        trend_ma=getenv_int("TREND_MA", 150),
         vol_lookback=getenv_int("VOL_LOOKBACK", 20),
         target_vol=getenv_float("TARGET_VOL", 0.20),
         max_gross_exposure=getenv_float("MAX_GROSS_EXPOSURE", 1.0),
