@@ -7,7 +7,7 @@ set -euo pipefail
 set -x
 export PYTHONUNBUFFERED=1
 
-RUN_LOG_FILE="${RUN_LOG_FILE:-/tmp/etf-trend-regime.log}"
+RUN_LOG_FILE="${RUN_LOG_FILE:-/tmp/etf-adaptive-rotation.log}"
 mkdir -p "$(dirname "$RUN_LOG_FILE")"
 touch "$RUN_LOG_FILE"
 
@@ -15,7 +15,7 @@ touch "$RUN_LOG_FILE"
 # while also keeping an in-container copy for direct inspection if needed.
 exec > >(tee -a "$RUN_LOG_FILE") 2>&1
 
-echo "[$(date)] Running Trend Regime Algo..."
+echo "[$(date)] Running Adaptive Rotation Algo..."
 
 # ----------------------------
 # Load env (if present)
