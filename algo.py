@@ -57,19 +57,15 @@ def strategy_config_from_env():
         normal_gross_cap=getenv_float("NORMAL_GROSS_CAP", 1.00),
         leverage_momentum_lookbacks=tuple(
             int(n.strip())
-            for n in os.getenv(
-                "LEVERAGE_MOMENTUM_LOOKBACKS", "63,126,252"
-            ).split(",")
+            for n in os.getenv("LEVERAGE_MOMENTUM_LOOKBACKS", "63,126,252").split(",")
         ),
-        leverage_on_required_positive=getenv_int(
-            "LEVERAGE_ON_REQUIRED_POSITIVE", 3
-        ),
+        leverage_on_required_positive=getenv_int("LEVERAGE_ON_REQUIRED_POSITIVE", 3),
         leverage_off_min_positive=getenv_int("LEVERAGE_OFF_MIN_POSITIVE", 2),
         high_vol_adjustment_enabled=str2bool(
             os.getenv("HIGH_VOL_ADJUSTMENT_ENABLED", True)
         ),
         high_vol_threshold=getenv_float("HIGH_VOL_THRESHOLD", 1.20),
-        high_vol_weight_multiplier=getenv_float("HIGH_VOL_WEIGHT_MULTIPLIER", 0.70),
+        high_vol_weight_multiplier=getenv_float("HIGH_VOL_WEIGHT_MULTIPLIER", 0.40),
         high_vol_reference_lookback=getenv_int("HIGH_VOL_REFERENCE_LOOKBACK", 252),
         use_ema_smoothing=str2bool(os.getenv("USE_EMA_SMOOTHING", True)),
         ema_alpha=getenv_float("EMA_ALPHA", 0.30),
