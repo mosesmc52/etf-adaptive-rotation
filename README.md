@@ -9,17 +9,22 @@ Strategy settings are read in `algo.py` and passed as `config` to
 `run_single_iteration`. Environment variables and their defaults:
 
 ```dotenv
-ETF_UNIVERSE=QQQ,EFA,TLT,GLD,VNQ
+ETF_UNIVERSE=QQQ,VXUS,TLT,GLD,VNQ
 CASH_ETF=BIL
-HISTORY_START=2006-01-01
-TOP_N=3
+HISTORY_START=2007-01-01
+TOP_N=2
 EXIT_RANK=5
 MOMENTUM_LOOKBACKS=63,126,252
 MOMENTUM_WEIGHTS=0.50,0.30,0.20
-TREND_MA=200
+TREND_MA=150
 VOL_LOOKBACK=20
 TARGET_VOL=0.20
 MAX_GROSS_EXPOSURE=1.50
+USE_MOMENTUM_LEVERAGE_GATE=true
+NORMAL_GROSS_CAP=1.00
+LEVERAGE_MOMENTUM_LOOKBACKS=63,126,252
+LEVERAGE_ON_REQUIRED_POSITIVE=3
+LEVERAGE_OFF_MIN_POSITIVE=2
 HIGH_VOL_ADJUSTMENT_ENABLED=true
 HIGH_VOL_THRESHOLD=1.20
 HIGH_VOL_WEIGHT_MULTIPLIER=0.70
@@ -72,8 +77,14 @@ month's final available session. `--force-rebalance` bypasses the monthly gate
 and uses the latest completed session. Preview runs do not mark a month traded.
 Alpaca adjusted daily bars drive signals; unadjusted recent closes estimate order
 quantities. Results can differ from the notebook's Yahoo data and simulated fills.
-The notebook's 1.5 exposure cap is preserved; negative cash is borrowing, not a
-short BIL position. Available buying power must cover orders.
+The notebook's momentum leverage gate is preserved. Exposure is normally capped
+at `NORMAL_GROSS_CAP=1.0`. It may rise toward `MAX_GROSS_EXPOSURE=1.5` only after
+all selected ETFs have positive returns over all three configured leverage
+momentum horizons. Once enabled, leverage remains on while every selected ETF
+has at least two positive horizons. The implementation replays historical
+month-end signals to reproduce this stateful rule. During leverage, BIL stays at
+zero and `financing_value` reports the amount above 100%; available buying power
+must cover orders.
 
 Keep the account-specific `.rotation-state-*.json` file on persistent storage
 (or supply `--state-path`). It records monthly completion and selection history.

@@ -130,17 +130,22 @@ def build_strategy_snapshot_for_reporting(
 
 @dataclass(frozen=True)
 class StrategyConfig:
-    universe: tuple = ("QQQ", "EFA", "TLT", "GLD", "VNQ")
+    universe: tuple = ("QQQ", "VXUS", "TLT", "GLD", "VNQ")
     cash: str = "BIL"
-    history_start: str = "2006-01-01"
-    top_n: int = 3
+    history_start: str = "2007-01-01"
+    top_n: int = 2
     exit_rank: int = 5
     momentum_lookbacks: tuple = (63, 126, 252)
     momentum_weights: tuple = (0.50, 0.30, 0.20)
-    trend_ma: int = 200
+    trend_ma: int = 150
     vol_lookback: int = 20
     target_vol: float = 0.20
+    use_momentum_leverage_gate: bool = True
     max_gross_exposure: float = 1.50
+    normal_gross_cap: float = 1.00
+    leverage_momentum_lookbacks: tuple = (63, 126, 252)
+    leverage_on_required_positive: int = 3
+    leverage_off_min_positive: int = 2
     high_vol_adjustment_enabled: bool = True
     high_vol_threshold: float = 1.20
     high_vol_weight_multiplier: float = 0.70
@@ -169,7 +174,15 @@ def validate_config(cfg):
         raise ValueError("Momentum weights must be nonnegative and sum to one.")
     if any(
         not isinstance(n, int) or n < 1
-        for n in (*cfg.momentum_lookbacks, cfg.trend_ma, cfg.top_n, cfg.exit_rank)
+        for n in (
+            *cfg.momentum_lookbacks,
+            *cfg.leverage_momentum_lookbacks,
+            cfg.trend_ma,
+            cfg.top_n,
+            cfg.exit_rank,
+            cfg.leverage_on_required_positive,
+            cfg.leverage_off_min_positive,
+        )
     ):
         raise ValueError("Lookbacks and selection counts must be positive integers.")
     if cfg.vol_lookback < 2 or cfg.high_vol_reference_lookback < cfg.vol_lookback:
@@ -178,13 +191,25 @@ def validate_config(cfg):
         raise ValueError("Require exit_rank >= top_n and 0 < ema_alpha <= 1.")
     if any(
         not math.isfinite(v) or v <= 0
-        for v in (cfg.target_vol, cfg.max_gross_exposure, cfg.high_vol_threshold)
+        for v in (
+            cfg.target_vol,
+            cfg.max_gross_exposure,
+            cfg.normal_gross_cap,
+            cfg.high_vol_threshold,
+        )
     ):
         raise ValueError(
             "Volatility target, exposure cap, and threshold must be positive and finite."
         )
     if not 0 < cfg.high_vol_weight_multiplier <= 1:
         raise ValueError("High-volatility multiplier must be in (0, 1].")
+    if len(cfg.leverage_momentum_lookbacks) != 3:
+        raise ValueError("LEVERAGE_MOMENTUM_LOOKBACKS must contain three horizons.")
+    horizon_count = len(cfg.leverage_momentum_lookbacks)
+    if not 1 <= cfg.leverage_on_required_positive <= horizon_count:
+        raise ValueError("Invalid LEVERAGE_ON_REQUIRED_POSITIVE.")
+    if not 1 <= cfg.leverage_off_min_positive <= cfg.leverage_on_required_positive:
+        raise ValueError("Invalid LEVERAGE_OFF_MIN_POSITIVE.")
 
 
 def normalize_prices(prices, symbols, today):
@@ -235,6 +260,20 @@ def prepare_research_data(prices, cfg):
     volatility = returns.rolling(
         cfg.vol_lookback, min_periods=cfg.vol_lookback
     ).std() * np.sqrt(252)
+    leverage_returns = {
+        lookback: risky.pct_change(lookback, fill_method=None)
+        for lookback in cfg.leverage_momentum_lookbacks
+    }
+    leverage_available = pd.DataFrame(True, index=risky.index, columns=risky.columns)
+    leverage_positive_count = pd.DataFrame(0, index=risky.index, columns=risky.columns)
+    for values in leverage_returns.values():
+        leverage_available &= values.notna()
+        leverage_positive_count += values.gt(0).astype(int)
+    leverage_positive_count = leverage_positive_count.where(leverage_available)
+    strong_momentum = (
+        leverage_positive_count.eq(len(cfg.leverage_momentum_lookbacks))
+        & leverage_available
+    )
     reference = (
         volatility.rolling(
             cfg.high_vol_reference_lookback, min_periods=cfg.vol_lookback
@@ -255,6 +294,9 @@ def prepare_research_data(prices, cfg):
         "eligibility": trend & ranking.notna() & volatility.notna() & risky.notna(),
         "risky_returns": returns,
         "realized_volatility": volatility,
+        "leverage_momentum_returns": leverage_returns,
+        "leverage_positive_count": leverage_positive_count,
+        "strong_momentum": strong_momentum,
         "high_vol_reference": reference,
         "high_vol_ratio": ratio,
         "high_vol_trigger": trigger,
@@ -288,8 +330,8 @@ def select_etfs(research, date, previous, cfg):
     return selected, ranks, scores.to_dict()
 
 
-def calculate_weights(selected, date, research, cfg):
-    """Same inverse-volatility, covariance scaling and haircut as the notebook."""
+def calculate_pre_leverage_weights(selected, date, research, cfg):
+    """Return the notebook's inverse-volatility sleeve before its leverage policy."""
     window = research["risky_returns"].loc[:date, list(selected)].tail(cfg.vol_lookback)
     valid = [
         s
@@ -299,10 +341,10 @@ def calculate_weights(selected, date, research, cfg):
         and window[s].std() * np.sqrt(252) > 1e-4
     ]
     if not valid:
-        return pd.Series(dtype=float), np.nan, np.nan, np.nan, (), 0.0
+        return pd.Series(dtype=float), np.nan, np.nan
     window = window[valid].dropna()
     if len(window) < cfg.vol_lookback:
-        return pd.Series(dtype=float), np.nan, np.nan, np.nan, (), 0.0
+        return pd.Series(dtype=float), np.nan, np.nan
     inverse = 1 / (window.std(ddof=1) * np.sqrt(252)).clip(lower=1e-4)
     sleeve = min(len(valid) / cfg.top_n, 1.0)
     preliminary = inverse / inverse.sum() * sleeve
@@ -312,18 +354,109 @@ def calculate_weights(selected, date, research, cfg):
         )
         * np.sqrt(252)
     )
-    scalar = (
-        min(cfg.target_vol / estimated, cfg.max_gross_exposure)
-        if estimated > 1e-8
-        else 0.0
-    )
-    risky = preliminary * scalar
+    return preliminary, estimated, sleeve
+
+
+def apply_high_vol_adjustment(risky, date, research, cfg):
+    """Apply the notebook's post-target high-volatility haircut."""
+    risky = risky.copy()
+    if risky.empty or not cfg.high_vol_adjustment_enabled:
+        return risky, (), 0.0
     flags = research["high_vol_trigger"].loc[date, risky.index].fillna(False)
-    triggered = tuple(flags.index[flags]) if cfg.high_vol_adjustment_enabled else ()
+    triggered = tuple(flags.index[flags])
     before = float(risky.sum())
     if triggered:
         risky.loc[list(triggered)] *= cfg.high_vol_weight_multiplier
-    return risky, estimated, scalar, sleeve, triggered, before - float(risky.sum())
+    return risky, triggered, before - float(risky.sum())
+
+
+def calculate_signal_target(prices, research, target_date, cfg):
+    """Replay month-end selection and leverage state through ``target_date``."""
+    sessions = pd.Series(prices.index, index=prices.index)
+    signal_dates = list(
+        pd.DatetimeIndex(sessions.resample("ME").last().dropna().values)
+    )
+    signal_dates = [date for date in signal_dates if date <= target_date]
+    if target_date not in signal_dates:
+        signal_dates.append(target_date)
+    previous = []
+    leverage_state = False
+    latest = None
+    tolerance = 1e-6
+
+    for date in signal_dates:
+        selected, ranks, scores = select_etfs(research, date, previous, cfg)
+        previous = selected
+        preliminary, estimated, sleeve = calculate_pre_leverage_weights(
+            selected, date, research, cfg
+        )
+        selected_valid = list(preliminary.index)
+        counts = (
+            research["leverage_positive_count"]
+            .loc[date, selected_valid]
+            .dropna()
+            .astype(int)
+        )
+        strong = research["strong_momentum"].loc[date, selected_valid].fillna(False)
+        preliminary_total = float(preliminary.sum()) if len(preliminary) else 0.0
+        strong_weight = (
+            float(preliminary.loc[strong.index[strong]].sum()) / preliminary_total
+            if preliminary_total > 1e-12
+            else 0.0
+        )
+
+        if not selected_valid:
+            leverage_state = False
+        elif cfg.use_momentum_leverage_gate:
+            if leverage_state:
+                leverage_state = bool(
+                    len(counts) == len(selected_valid)
+                    and counts.ge(cfg.leverage_off_min_positive).all()
+                )
+            else:
+                leverage_state = bool(
+                    strong_weight >= 1.0 - tolerance
+                    and len(counts) == len(selected_valid)
+                    and counts.ge(cfg.leverage_on_required_positive).all()
+                )
+        else:
+            leverage_state = False
+
+        raw_scalar = (
+            max(float(cfg.target_vol / estimated), 0.0)
+            if np.isfinite(estimated) and estimated > 1e-8
+            else 0.0
+        )
+        if cfg.use_momentum_leverage_gate:
+            gross_cap = (
+                cfg.max_gross_exposure
+                if leverage_state
+                else min(cfg.normal_gross_cap, cfg.max_gross_exposure)
+            )
+        else:
+            gross_cap = cfg.max_gross_exposure
+        final_scalar = min(raw_scalar, gross_cap)
+        risky, triggered, reduction = apply_high_vol_adjustment(
+            preliminary * final_scalar, date, research, cfg
+        )
+        latest = {
+            "date": date,
+            "selected": selected_valid,
+            "ranks": ranks,
+            "scores": scores,
+            "risky": risky,
+            "estimated_vol": estimated,
+            "sleeve": sleeve,
+            "raw_vol_scalar": raw_scalar,
+            "final_vol_scalar": final_scalar,
+            "momentum_leverage_state": leverage_state,
+            "strong_momentum_weight": strong_weight,
+            "current_gross_cap": gross_cap,
+            "positive_momentum_horizon_counts": counts.to_dict(),
+            "high_vol_etfs": triggered,
+            "high_vol_weight_reduction": reduction,
+        }
+    return latest
 
 
 def build_order_plan(weights, budget, positions, prices, min_trade_dollars):
@@ -337,7 +470,7 @@ def build_order_plan(weights, budget, positions, prices, min_trade_dollars):
         price = float(prices[symbol])
         if not math.isfinite(price) or price <= 0:
             raise ValueError(f"Missing or invalid execution price for {symbol}.")
-        # Negative notebook cash denotes financing, not a short cash-ETF trade.
+        # The notebook's cash floor is zero; keep this defensive clamp for orders.
         target = (
             Decimal(str(max(0.0, weight) * budget)) / Decimal(str(price))
         ).quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
@@ -509,7 +642,10 @@ def run_single_iteration(
         if (boundary - date).days > 7 or prices.loc[date, list(symbols)].isna().any():
             raise ValueError("Signal prices are stale or missing for one or more ETFs.")
         needed = max(
-            max(cfg.momentum_lookbacks) + 1, cfg.trend_ma, cfg.vol_lookback + 1
+            max(cfg.momentum_lookbacks) + 1,
+            max(cfg.leverage_momentum_lookbacks) + 1,
+            cfg.trend_ma,
+            cfg.vol_lookback + 1,
         )
         if any(candidates[s].count() < needed for s in cfg.universe):
             raise ValueError(
@@ -517,20 +653,13 @@ def run_single_iteration(
             )
         research = prepare_research_data(candidates, cfg)
         positions = api.list_positions()
-        previous = state.get(
-            "selected",
-            [
-                p.symbol
-                for p in positions
-                if p.symbol in cfg.universe and float(p.qty) > 0
-            ],
-        )
-        selected, ranks, scores = select_etfs(research, date, previous, cfg)
-        risky, estimated_vol, scalar, sleeve, triggered, reduction = calculate_weights(
-            selected, date, research, cfg
-        )
+        signal = calculate_signal_target(candidates, research, date, cfg)
+        selected = signal["selected"]
+        ranks = signal["ranks"]
+        scores = signal["scores"]
+        risky = signal["risky"]
         weights = {s: float(risky.get(s, 0)) for s in cfg.universe}
-        weights[cfg.cash] = 1 - float(risky.sum())
+        weights[cfg.cash] = max(1 - float(risky.sum()), 0.0)
         equity = float(account.equity)
         if not math.isfinite(equity) or equity <= 0:
             raise ValueError("Account equity must be positive and finite.")
@@ -562,9 +691,18 @@ def run_single_iteration(
             "scores": scores,
             "target_weights": weights,
             "target_values": {s: w * budget for s, w in weights.items()},
-            "financing_value": max(0.0, -weights[cfg.cash] * budget),
-            "high_vol_etfs": list(triggered),
-            "high_vol_weight_reduction": reduction,
+            "financing_value": max(0.0, (float(risky.sum()) - 1.0) * budget),
+            "estimated_portfolio_vol": signal["estimated_vol"],
+            "raw_vol_scalar": signal["raw_vol_scalar"],
+            "final_vol_scalar": signal["final_vol_scalar"],
+            "momentum_leverage_state": signal["momentum_leverage_state"],
+            "strong_momentum_weight": signal["strong_momentum_weight"],
+            "current_gross_cap": signal["current_gross_cap"],
+            "positive_momentum_horizon_counts": signal[
+                "positive_momentum_horizon_counts"
+            ],
+            "high_vol_etfs": list(signal["high_vol_etfs"]),
+            "high_vol_weight_reduction": signal["high_vol_weight_reduction"],
             "orders": plan,
         }
         if not is_live_trade:
@@ -575,6 +713,8 @@ def run_single_iteration(
                 "market_data_date": result["signal_date"],
                 "gross_risky": float(risky.sum()),
                 "cash_weight": weights[cfg.cash],
+                "momentum_leverage_state": signal["momentum_leverage_state"],
+                "current_gross_cap": signal["current_gross_cap"],
             }
             if persist_state:
                 state.update(
@@ -654,6 +794,8 @@ def run_single_iteration(
             "market_data_date": result["signal_date"],
             "gross_risky": float(risky.sum()),
             "cash_weight": weights[cfg.cash],
+            "momentum_leverage_state": signal["momentum_leverage_state"],
+            "current_gross_cap": signal["current_gross_cap"],
         }
         return result
 

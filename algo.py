@@ -33,11 +33,11 @@ def strategy_config_from_env():
     config = StrategyConfig(
         universe=tuple(
             s.strip().upper()
-            for s in os.getenv("ETF_UNIVERSE", "QQQ,ACWI,TLT,GLD,VNQ").split(",")
+            for s in os.getenv("ETF_UNIVERSE", "QQQ,VXUS,TLT,GLD,VNQ").split(",")
         ),
         cash=os.getenv("CASH_ETF", "BIL").strip().upper(),
-        history_start=os.getenv("HISTORY_START", "2006-01-01"),
-        top_n=getenv_int("TOP_N", 3),
+        history_start=os.getenv("HISTORY_START", "2007-01-01"),
+        top_n=getenv_int("TOP_N", 2),
         exit_rank=getenv_int("EXIT_RANK", 5),
         momentum_lookbacks=tuple(
             int(n.strip())
@@ -50,7 +50,21 @@ def strategy_config_from_env():
         trend_ma=getenv_int("TREND_MA", 150),
         vol_lookback=getenv_int("VOL_LOOKBACK", 20),
         target_vol=getenv_float("TARGET_VOL", 0.20),
-        max_gross_exposure=getenv_float("MAX_GROSS_EXPOSURE", 1.0),
+        use_momentum_leverage_gate=str2bool(
+            os.getenv("USE_MOMENTUM_LEVERAGE_GATE", True)
+        ),
+        max_gross_exposure=getenv_float("MAX_GROSS_EXPOSURE", 1.50),
+        normal_gross_cap=getenv_float("NORMAL_GROSS_CAP", 1.00),
+        leverage_momentum_lookbacks=tuple(
+            int(n.strip())
+            for n in os.getenv(
+                "LEVERAGE_MOMENTUM_LOOKBACKS", "63,126,252"
+            ).split(",")
+        ),
+        leverage_on_required_positive=getenv_int(
+            "LEVERAGE_ON_REQUIRED_POSITIVE", 3
+        ),
+        leverage_off_min_positive=getenv_int("LEVERAGE_OFF_MIN_POSITIVE", 2),
         high_vol_adjustment_enabled=str2bool(
             os.getenv("HIGH_VOL_ADJUSTMENT_ENABLED", True)
         ),

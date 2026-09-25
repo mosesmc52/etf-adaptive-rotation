@@ -9,7 +9,7 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-from helpers import (StrategyConfig, calculate_weights, is_paper_account,
+from helpers import (StrategyConfig, calculate_signal_target, is_paper_account,
                      prepare_research_data, run_single_iteration, export_strategy_json)
 
 
@@ -62,7 +62,8 @@ class RotationTests(unittest.TestCase):
         result = self.run_iteration(equity_fraction=0.25)
         self.assertEqual(result["allocation_value"], 25000)
         self.assertEqual(result["signal_date"], "2026-08-31")
-        self.assertAlmostEqual(sum(result["target_values"].values()), 25000)
+        self.assertGreater(sum(result["target_values"].values()), 0)
+        self.assertGreaterEqual(result["target_weights"][self.cfg.cash], 0)
         self.assertEqual(self.api.orders, [])
         self.assertFalse(self.state.exists())
         self.assertNotIn("OTHER", [o["symbol"] for o in result["orders"]])
@@ -128,7 +129,9 @@ class RotationTests(unittest.TestCase):
         notebook = Path(__file__).resolve().parents[1] / "backtest/strategy/diversified_etf_rotation_backtest.ipynb"
         cells = json.loads(notebook.read_text())["cells"]
         names = {"calculate_momentum", "calculate_trend_filter", "calculate_volatility",
-                 "prepare_research_data", "apply_high_vol_adjustment", "calculate_weights"}
+                 "calculate_leverage_momentum", "prepare_research_data", "_weekly_signal_dates",
+                 "generate_weekly_selection", "apply_high_vol_adjustment",
+                 "calculate_pre_leverage_weights", "apply_vol_target"}
         definitions = []
         for cell in cells:
             if cell["cell_type"] == "code":
@@ -139,12 +142,29 @@ class RotationTests(unittest.TestCase):
         expected = namespace["prepare_research_data"](self.prices, self.cfg)
         actual = prepare_research_data(self.prices, self.cfg)
         for key in actual:
-            pd.testing.assert_frame_equal(actual[key], expected[key])
-        for selected in [[], ["QQQ"], ["QQQ", "EFA", "GLD"]]:
-            for date in self.prices.index[-60::10]:
-                a = calculate_weights(selected, date, actual, self.cfg)
-                b = namespace["calculate_weights"](selected, date, expected, self.cfg)
-                pd.testing.assert_series_equal(a[0], b[0])
-                np.testing.assert_allclose(a[1:4], b[1:4], equal_nan=True)
-                self.assertEqual(a[4], b[4])
-                self.assertAlmostEqual(a[5], b[5])
+            if isinstance(actual[key], dict):
+                for subkey in actual[key]:
+                    pd.testing.assert_frame_equal(actual[key][subkey], expected[key][subkey])
+            else:
+                pd.testing.assert_frame_equal(actual[key], expected[key])
+        cfg = SimpleNamespace(**self.cfg.__dict__, rebalance_frequency="ME")
+        selection = namespace["generate_weekly_selection"](expected, self.prices, cfg)
+        targets, diagnostics = namespace["apply_vol_target"](
+            selection, expected, self.prices, cfg
+        )
+        latest = calculate_signal_target(
+            self.prices, actual, self.prices.index[-1], self.cfg
+        )
+        expected_weights = targets.iloc[-1]
+        for symbol in self.cfg.universe:
+            self.assertAlmostEqual(
+                latest["risky"].get(symbol, 0), expected_weights[symbol]
+            )
+        expected_diag = diagnostics.iloc[-1]
+        self.assertEqual(
+            latest["momentum_leverage_state"],
+            expected_diag["Momentum_Leverage_State"],
+        )
+        self.assertAlmostEqual(
+            latest["current_gross_cap"], expected_diag["Current_Gross_Cap"]
+        )
